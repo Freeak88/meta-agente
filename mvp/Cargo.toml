@@ -1,0 +1,15 @@
+[package]
+name = "operant-mvp"
+version = "0.9.0"
+edition = "2021"
+authors = ["Operant Team"]
+description = "MVP de framework de agentes autonomos"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
