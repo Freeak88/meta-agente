@@ -1,6 +1,6 @@
 use crate::capability::{CapabilityConfig, CapabilityRegistry, ExecutionResult};
 use crate::risk::{RiskConfig, RiskDecision, RiskGate};
-use crate::state::{State, StepResult};
+use crate::state::{AgentStateSnapshot, State, StepResult};
 use chrono::Utc;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -138,6 +138,13 @@ pub struct ExecutionLoop<'a> {
     package: AgentPackage,
     registry: &'a CapabilityRegistry,
     risk_gate: RiskGate,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkerContext {
+    pub state: AgentStateSnapshot,
+    pub global_config: AgentGlobalConfig,
+    pub risk_config: RiskConfig,
 }
 
 impl<'a> ExecutionLoop<'a> {
@@ -1017,5 +1024,24 @@ mod tests {
         );
 
         std::fs::remove_file(state.snapshot_path()).unwrap();
+    }
+
+    #[test]
+    fn worker_context_keeps_package_config_separate_from_state_snapshot() {
+        let mut package = happy_path_package();
+        package.global_config.base_url = Some("https://example.test".to_string());
+        let mut state = State::new("worker_context_test");
+        state.total_executions = 7;
+
+        let context = WorkerContext {
+            state: state.snapshot(),
+            global_config: package.global_config.clone(),
+            risk_config: package.risk_config.clone(),
+        };
+
+        assert_eq!(context.state.agent_id, "worker_context_test");
+        assert_eq!(context.state.total_executions, 7);
+        assert!(context.global_config.base_url.is_some());
+        assert_eq!(context.risk_config.max_total_executions, 100);
     }
 }
