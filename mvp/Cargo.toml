@@ -13,3 +13,4 @@ serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
+rand = { version = "0.8", features = ["std_rng"] }

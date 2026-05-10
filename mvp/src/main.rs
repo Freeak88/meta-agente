@@ -2,6 +2,7 @@ mod capability;
 mod executor;
 mod r#loop;
 mod risk;
+mod simulation;
 mod state;
 
 use capability::{CapabilityConfig, CapabilityRegistry, RetryPolicy};
