@@ -3,6 +3,8 @@ mod executor;
 mod r#loop;
 mod risk;
 mod simulation;
+#[cfg(test)]
+mod simulation_integration_test;
 mod state;
 
 use capability::{CapabilityConfig, CapabilityRegistry, RetryPolicy};

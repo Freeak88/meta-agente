@@ -102,6 +102,7 @@ pub struct MockRegistry {
     responses: HashMap<String, MockResponse>,
     rng: Option<StdRng>,
     failure_rate: f64,
+    stochastic_run_failed: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +119,7 @@ impl MockRegistry {
             responses: HashMap::new(),
             rng: None,
             failure_rate: 0.0,
+            stochastic_run_failed: None,
         }
     }
 
@@ -145,9 +147,22 @@ impl MockRegistry {
             .unwrap_or(10);
         sleep(Duration::from_millis(latency_ms)).await;
 
-        if let Some(rng) = &mut self.rng {
-            let roll: f64 = rng.gen();
-            if roll < self.failure_rate {
+        if self.rng.is_some() {
+            let run_failed = match self.stochastic_run_failed {
+                Some(run_failed) => run_failed,
+                None => {
+                    let roll: f64 = self
+                        .rng
+                        .as_mut()
+                        .expect("rng exists for stochastic mode")
+                        .gen();
+                    let run_failed = roll < self.failure_rate;
+                    self.stochastic_run_failed = Some(run_failed);
+                    run_failed
+                }
+            };
+
+            if run_failed {
                 return ExecutionResult::Failure("stochastic_failure".to_string());
             }
         }
