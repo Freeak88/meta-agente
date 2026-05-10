@@ -1,4 +1,12 @@
 mod capability;
+mod dsl;
+#[cfg(test)]
+mod dsl_contract_test;
+#[cfg(test)]
+mod dsl_e2e_test;
+mod dsl_parser;
+#[cfg(test)]
+mod dsl_parser_test;
 mod executor;
 mod r#loop;
 mod risk;
