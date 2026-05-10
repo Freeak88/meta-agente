@@ -47,6 +47,8 @@ fn opl_value(input: &str) -> IResult<&str, OplValue> {
         map(string_literal, OplValue::String),
         map(boolean_literal, OplValue::Bool),
         map(number_literal, OplValue::Number),
+        map(list_literal, OplValue::List),
+        map(object_literal, OplValue::Object),
         map(identifier, OplValue::Identifier),
     ))(input)
 }
@@ -64,6 +66,15 @@ fn property(input: &str) -> IResult<&str, (String, OplValue)> {
     let (input, _) = char('=')(input)?;
     let (input, value) = delimited(multispace0, opl_value, multispace0)(input)?;
     Ok((input, (key, value)))
+}
+
+fn object_literal(input: &str) -> IResult<&str, HashMap<String, OplValue>> {
+    let (input, properties) = delimited(
+        delimited(multispace0, char('{'), multispace0),
+        separated_list0(delimited(multispace0, char(','), multispace0), property),
+        delimited(multispace0, char('}'), multispace0),
+    )(input)?;
+    Ok((input, properties.into_iter().collect()))
 }
 
 fn property_list(input: &str) -> IResult<&str, HashMap<String, OplValue>> {
