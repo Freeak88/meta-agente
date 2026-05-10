@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meta-Agente - Software que trabaja solo</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --ink: #222;
+            --muted: #60646c;
+            --line: #dedede;
+            --panel: #f6f6f6;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            line-height: 1.6;
+            color: var(--ink);
+            background: #fff;
+        }
+
+        main {
+            width: min(920px, calc(100% - 32px));
+            margin: 0 auto;
+            padding: 56px 0;
+        }
+
+        h1 {
+            font-size: clamp(2.4rem, 8vw, 4.8rem);
+            line-height: 1;
+            margin: 0 0 16px;
+            letter-spacing: 0;
+        }
+
+        h2 {
+            font-size: 1.4rem;
+            margin: 40px 0 12px;
+        }
+
+        .tagline {
+            font-size: 1.25rem;
+            color: var(--muted);
+            max-width: 680px;
+            margin: 0 0 24px;
+        }
+
+        .lead {
+            font-size: 1.1rem;
+            max-width: 720px;
+        }
+
+        .demo {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            padding: 24px;
+            border-radius: 8px;
+            margin: 32px 0;
+            overflow: hidden;
+        }
+
+        pre {
+            margin: 0;
+            overflow-x: auto;
+            font-size: 0.92rem;
+            line-height: 1.5;
+        }
+
+        code {
+            font-family: "Fira Code", Consolas, monospace;
+        }
+
+        .cta {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 44px;
+            background: #000;
+            color: #fff;
+            padding: 0 22px;
+            text-decoration: none;
+            border-radius: 4px;
+            font-weight: 700;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin: 24px 0;
+        }
+
+        .item {
+            border-top: 1px solid var(--line);
+            padding-top: 14px;
+        }
+
+        footer {
+            border-top: 1px solid var(--line);
+            margin-top: 48px;
+            padding-top: 20px;
+            color: var(--muted);
+            font-size: 0.95rem;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Meta-Agente</h1>
+        <p class="tagline">Un sistema que crea agentes de software que trabajan solo.</p>
+
+        <p class="lead">Le decís qué querés que haga en lenguaje natural. El sistema arma un agente, lo simula, y lo pone detrás de una API REST lista para integrar.</p>
+
+        <section class="demo" aria-labelledby="demo-title">
+            <h2 id="demo-title">Demo en 30 segundos</h2>
+            <pre><code>$ git clone https://github.com/Freeak88/meta-agente.git
+$ cd meta-agente/mvp
+$ cargo run -- --server
+
+# En otra terminal
+$ curl -X POST http://localhost:3000/agents \
+  -H "Content-Type: application/json" \
+  -d '{"intent": {"goal": "automatizar facturación AFIP", "domain": "finanzas"}}'</code></pre>
+        </section>
+
+        <a href="https://github.com/Freeak88/meta-agente" class="cta">Ver en GitHub</a>
+
+        <section>
+            <h2>Qué hace v1.0</h2>
+            <div class="grid">
+                <div class="item"><strong>Interpreta</strong><br>Convierte una intención humana en estructura operativa.</div>
+                <div class="item"><strong>Genera</strong><br>Produce OPL, un lenguaje declarativo para agentes.</div>
+                <div class="item"><strong>Simula</strong><br>Valida el agente antes de entregarlo.</div>
+                <div class="item"><strong>Expone</strong><br>Entrega el resultado por API HTTP.</div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Roadmap</h2>
+            <ul>
+                <li><strong>v1.0</strong> API REST, generación end-to-end</li>
+                <li><strong>v1.1</strong> MCP, Skills, Tools</li>
+                <li><strong>v1.2</strong> Cloud managed</li>
+                <li><strong>v1.3</strong> Enterprise on-premise</li>
+            </ul>
+        </section>
+
+        <footer>MIT License. Hecho con intención de que el software trabaje solo.</footer>
+    </main>
+</body>
+</html>
