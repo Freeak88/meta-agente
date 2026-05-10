@@ -1,4 +1,4 @@
-use crate::state::State;
+use crate::state::{AgentStateSnapshot, State};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -41,37 +41,73 @@ pub struct RiskGate {
     config: RiskConfig,
 }
 
+pub trait RiskContext {
+    fn consecutive_failures(&self) -> u32;
+    fn total_executions(&self) -> u32;
+    fn is_paused(&self) -> bool;
+}
+
+impl RiskContext for State {
+    fn consecutive_failures(&self) -> u32 {
+        self.consecutive_failures
+    }
+
+    fn total_executions(&self) -> u32 {
+        self.total_executions
+    }
+
+    fn is_paused(&self) -> bool {
+        self.paused
+    }
+}
+
+impl RiskContext for AgentStateSnapshot {
+    fn consecutive_failures(&self) -> u32 {
+        self.consecutive_failures
+    }
+
+    fn total_executions(&self) -> u32 {
+        self.total_executions
+    }
+
+    fn is_paused(&self) -> bool {
+        self.paused
+    }
+}
+
 impl RiskGate {
     pub fn new(config: RiskConfig) -> Self {
         Self { config }
     }
 
-    pub fn evaluate(&self, capability: &str, state: &State) -> RiskDecision {
+    pub fn evaluate<C: RiskContext>(&self, capability: &str, context: &C) -> RiskDecision {
         if self.config.blacklisted_capabilities.contains(capability) {
             return RiskDecision::Block {
                 reason: format!("capability_blacklisted: {}", capability),
             };
         }
 
-        if state.consecutive_failures >= self.config.max_consecutive_failures {
+        if context.consecutive_failures() >= self.config.max_consecutive_failures {
             return RiskDecision::Block {
                 reason: format!(
                     "max_consecutive_failures_exceeded: {} >= {}",
-                    state.consecutive_failures, self.config.max_consecutive_failures
+                    context.consecutive_failures(),
+                    self.config.max_consecutive_failures
                 ),
             };
         }
 
-        if state.total_executions >= self.config.max_total_executions {
+        if context.total_executions() >= self.config.max_total_executions {
             return RiskDecision::Block {
                 reason: format!(
                     "max_total_executions_exceeded: {} >= {}",
-                    state.total_executions, self.config.max_total_executions
+                    context.total_executions(),
+                    self.config.max_total_executions
                 ),
             };
         }
 
-        if state.paused {
+        if context.is_paused() {
             return RiskDecision::Block {
                 reason: "state_already_paused".to_string(),
             };
@@ -141,6 +177,19 @@ mod tests {
 
         match gate.evaluate("db_drop", &state) {
             RiskDecision::Block { reason } => assert!(reason.contains("db_drop")),
+            RiskDecision::Allow => panic!("expected Block"),
+        }
+    }
+
+    #[test]
+    fn evaluates_agent_state_snapshot() {
+        let gate = RiskGate::new(RiskConfig::default());
+        let mut state = State::new("test_snapshot_risk");
+        state.total_executions = 100;
+        let snapshot = state.snapshot();
+
+        match gate.evaluate("http_ping", &snapshot) {
+            RiskDecision::Block { reason } => assert!(reason.contains("total_executions")),
             RiskDecision::Allow => panic!("expected Block"),
         }
     }
