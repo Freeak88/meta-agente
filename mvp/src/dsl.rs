@@ -48,6 +48,7 @@ pub enum OplValue {
     Number(f64),
     Bool(bool),
     List(Vec<OplValue>),
+    Object(HashMap<String, OplValue>),
     Identifier(String),
 }
 
@@ -86,14 +87,33 @@ impl OplTranspiler {
             capability: step.capability.clone(),
             max_retries: 2,
             input: match &step.input {
-                Some(OplValue::String(value)) => {
-                    InputSource::Static(serde_json::Value::String(value.clone()))
-                }
+                Some(value) => InputSource::Static(Self::value_to_json(value)),
                 _ => InputSource::None,
             },
             config_override: None,
             condition: None,
             on_skip: None,
+        }
+    }
+
+    fn value_to_json(value: &OplValue) -> serde_json::Value {
+        match value {
+            OplValue::String(value) | OplValue::Identifier(value) => {
+                serde_json::Value::String(value.clone())
+            }
+            OplValue::Number(value) => serde_json::Number::from_f64(*value)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+            OplValue::Bool(value) => serde_json::Value::Bool(*value),
+            OplValue::List(values) => {
+                serde_json::Value::Array(values.iter().map(Self::value_to_json).collect())
+            }
+            OplValue::Object(values) => serde_json::Value::Object(
+                values
+                    .iter()
+                    .map(|(key, value)| (key.clone(), Self::value_to_json(value)))
+                    .collect(),
+            ),
         }
     }
 }

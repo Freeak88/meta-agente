@@ -9,6 +9,9 @@ mod dsl_parser;
 mod dsl_parser_test;
 mod executor;
 mod r#loop;
+mod meta_agent;
+#[cfg(test)]
+mod meta_agent_contract_test;
 mod risk;
 mod simulation;
 #[cfg(test)]
