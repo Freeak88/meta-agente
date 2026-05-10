@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct CapabilityConfig {
@@ -50,8 +51,9 @@ pub trait CapabilityAdapter: Send + Sync {
     async fn execute(&self, input: Option<Value>, config: &CapabilityConfig) -> ExecutionResult;
 }
 
+#[derive(Clone)]
 pub struct CapabilityRegistry {
-    adapters: HashMap<String, Box<dyn CapabilityAdapter>>,
+    adapters: HashMap<String, Arc<dyn CapabilityAdapter>>,
     configs: HashMap<String, CapabilityConfig>,
     contracts: HashMap<String, CapabilityContract>,
 }
@@ -71,7 +73,7 @@ impl CapabilityRegistry {
         config: Option<CapabilityConfig>,
     ) {
         let id = adapter.capability_id().to_string();
-        self.adapters.insert(id.clone(), adapter);
+        self.adapters.insert(id.clone(), Arc::from(adapter));
         self.configs.insert(id.clone(), config.unwrap_or_default());
         self.contracts
             .insert(id.clone(), Self::default_contract_for(&id));

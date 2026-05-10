@@ -3,7 +3,8 @@ use crate::risk::{RiskConfig, RiskDecision, RiskGate};
 use crate::state::{AgentStateSnapshot, State, StepResult};
 use chrono::Utc;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Clone)]
@@ -37,6 +38,39 @@ pub struct Step {
     pub config_override: Option<Value>,
     pub condition: Option<Condition>,
     pub on_skip: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParallelGroup {
+    pub id: String,
+    pub steps: Vec<Step>,
+    pub join_strategy: JoinStrategy,
+    pub max_concurrency: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub enum JoinStrategy {
+    AllSuccess,
+    AnySuccess,
+    Quorum(usize),
+    FailFast,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkerResult {
+    pub step_id: String,
+    pub result: StepResult,
+    pub declaration_index: usize,
+    pub executions: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParallelGroupOutcome {
+    pub group_id: String,
+    pub succeeded: bool,
+    pub success_count: usize,
+    pub failure_count: usize,
+    pub fail_fast_triggered: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -357,6 +391,146 @@ impl<'a> ExecutionLoop<'a> {
         }
     }
 
+    pub async fn execute_parallel_group(
+        &self,
+        group: &ParallelGroup,
+        state: &mut State,
+    ) -> Result<ParallelGroupOutcome, String> {
+        self.validate_parallel_group_writes(group, state)?;
+
+        if let Some(max_concurrency) = group.max_concurrency {
+            if max_concurrency == 0 {
+                return Err(format!(
+                    "parallel_group {} max_concurrency must be > 0",
+                    group.id
+                ));
+            }
+            if max_concurrency < group.steps.len() {
+                return Err(format!(
+                    "parallel_group {} max_concurrency limit is documented but not implemented yet",
+                    group.id
+                ));
+            }
+        }
+
+        let context = WorkerContext {
+            state: state.snapshot(),
+            global_config: self.package.global_config.clone(),
+            risk_config: self.package.risk_config.clone(),
+        };
+        let registry = (*self.registry).clone();
+        let mut join_set = JoinSet::new();
+
+        for (declaration_index, step) in group.steps.iter().cloned().enumerate() {
+            let worker_context = context.clone();
+            let worker_registry = registry.clone();
+            join_set.spawn(async move {
+                execute_parallel_worker(step, declaration_index, worker_context, worker_registry)
+                    .await
+            });
+        }
+
+        let mut worker_results = Vec::new();
+        let mut fail_fast_triggered = false;
+
+        while let Some(joined) = join_set.join_next().await {
+            let result = joined.map_err(|err| format!("parallel_worker_join_error: {}", err))?;
+            let failed = !result.result.success;
+            worker_results.push(result);
+
+            if matches!(group.join_strategy, JoinStrategy::FailFast) && failed {
+                fail_fast_triggered = true;
+                join_set.abort_all();
+                break;
+            }
+        }
+
+        while let Some(joined) = join_set.join_next().await {
+            match joined {
+                Ok(result) => worker_results.push(result),
+                Err(err) if err.is_cancelled() => {}
+                Err(err) => return Err(format!("parallel_worker_join_error: {}", err)),
+            }
+        }
+
+        worker_results.sort_by_key(|result| result.declaration_index);
+
+        let success_count = worker_results
+            .iter()
+            .filter(|result| result.result.success)
+            .count();
+        let failure_count = worker_results
+            .iter()
+            .filter(|result| !result.result.success)
+            .count();
+        let succeeded = match group.join_strategy {
+            JoinStrategy::AllSuccess => {
+                worker_results.len() == group.steps.len() && failure_count == 0
+            }
+            JoinStrategy::AnySuccess => success_count > 0,
+            JoinStrategy::Quorum(required) => success_count >= required,
+            JoinStrategy::FailFast => {
+                worker_results.len() == group.steps.len() && failure_count == 0
+            }
+        };
+
+        for worker_result in &worker_results {
+            for _ in 0..worker_result.executions {
+                state.record_execution();
+            }
+            if worker_result.result.success {
+                state.success();
+            } else {
+                state.fail();
+            }
+        }
+
+        let results = worker_results
+            .into_iter()
+            .map(|worker_result| (worker_result.step_id, worker_result.result))
+            .collect();
+        state.merge_results(results);
+
+        if !succeeded {
+            state.paused = true;
+            if let Err(err) = state.save() {
+                println!("  [ERROR] failed to save: {}", err);
+            }
+        }
+
+        Ok(ParallelGroupOutcome {
+            group_id: group.id.clone(),
+            succeeded,
+            success_count,
+            failure_count,
+            fail_fast_triggered,
+        })
+    }
+
+    fn validate_parallel_group_writes(
+        &self,
+        group: &ParallelGroup,
+        state: &State,
+    ) -> Result<(), String> {
+        let mut seen = HashSet::new();
+        for step in &group.steps {
+            if !seen.insert(step.id.as_str()) {
+                return Err(format!(
+                    "parallel_group {} has duplicate step id {}",
+                    group.id, step.id
+                ));
+            }
+            if state.results.contains_key(&step.id) {
+                return Err(format!(
+                    "parallel_group {} would overwrite existing result {}",
+                    group.id, step.id
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     fn evaluate_condition(&self, condition: &Condition, state: &State) -> Result<bool, String> {
         match condition {
             Condition::Always => Ok(true),
@@ -550,6 +724,266 @@ impl<'a> ExecutionLoop<'a> {
             println!("  {} {}: {}", status, step_id, detail);
         }
     }
+}
+
+async fn execute_parallel_worker(
+    step: Step,
+    declaration_index: usize,
+    context: WorkerContext,
+    registry: CapabilityRegistry,
+) -> WorkerResult {
+    let result = match should_execute_snapshot_step(&step, &context.state) {
+        Ok(true) => execute_snapshot_step(&step, &context, &registry).await,
+        Ok(false) => StepExecution {
+            result: StepResult {
+                success: true,
+                data: Some("\"SKIPPED\"".to_string()),
+                error: step.on_skip.clone(),
+                timestamp: Utc::now().to_rfc3339(),
+            },
+            executions: 0,
+        },
+        Err(err) => StepExecution {
+            result: StepResult {
+                success: false,
+                data: None,
+                error: Some(format!("condition_error: {}", err)),
+                timestamp: Utc::now().to_rfc3339(),
+            },
+            executions: 0,
+        },
+    };
+
+    WorkerResult {
+        step_id: step.id,
+        result: result.result,
+        declaration_index,
+        executions: result.executions,
+    }
+}
+
+struct StepExecution {
+    result: StepResult,
+    executions: u32,
+}
+
+async fn execute_snapshot_step(
+    step: &Step,
+    context: &WorkerContext,
+    registry: &CapabilityRegistry,
+) -> StepExecution {
+    let resolved_input =
+        match resolve_snapshot_input(&step.input, context, &context.state.previous_results) {
+            Ok(input) => input,
+            Err(err) => return failed_worker_step(format!("input_error: {}", err), 0),
+        };
+
+    let risk_gate = RiskGate::new(context.risk_config.clone());
+    if let RiskDecision::Block { reason } = risk_gate.evaluate(&step.capability, &context.state) {
+        return failed_worker_step(format!("risk_blocked: {}", reason), 0);
+    }
+
+    let (adapter, registry_config) = match registry.resolve(&step.capability) {
+        Some(resolved) => resolved,
+        None => return failed_worker_step(format!("capability_not_found: {}", step.capability), 0),
+    };
+
+    if let Err(err) = registry.validate_input(&step.capability, &resolved_input) {
+        return failed_worker_step(format!("input_validation_failed: {}", err), 0);
+    }
+
+    let config = context
+        .global_config
+        .merge_with_step(registry_config, &step.config_override);
+    let max_attempts = step.max_retries.min(config.retry_policy.max_attempts);
+    let mut attempts = 0;
+    let mut last_error = None;
+
+    for attempt in 1..=max_attempts {
+        attempts += 1;
+        match adapter.execute(resolved_input.clone(), &config).await {
+            ExecutionResult::Success(data) => {
+                return StepExecution {
+                    result: StepResult {
+                        success: true,
+                        data: Some(data.to_string()),
+                        error: None,
+                        timestamp: Utc::now().to_rfc3339(),
+                    },
+                    executions: attempts,
+                };
+            }
+            ExecutionResult::Failure(err) => {
+                last_error = Some(err);
+            }
+            ExecutionResult::Timeout => {
+                last_error = Some("timeout".to_string());
+            }
+        }
+
+        if attempt < max_attempts && config.retry_policy.backoff_ms > 0 {
+            sleep(Duration::from_millis(
+                config.retry_policy.backoff_ms.min(10),
+            ))
+            .await;
+        }
+    }
+
+    failed_worker_step(
+        last_error.unwrap_or_else(|| "max_attempts_zero".to_string()),
+        attempts,
+    )
+}
+
+fn failed_worker_step(error: String, executions: u32) -> StepExecution {
+    StepExecution {
+        result: StepResult {
+            success: false,
+            data: None,
+            error: Some(error),
+            timestamp: Utc::now().to_rfc3339(),
+        },
+        executions,
+    }
+}
+
+fn should_execute_snapshot_step(
+    step: &Step,
+    snapshot: &AgentStateSnapshot,
+) -> Result<bool, String> {
+    match &step.condition {
+        Some(condition) => evaluate_snapshot_condition(condition, snapshot),
+        None => Ok(true),
+    }
+}
+
+fn evaluate_snapshot_condition(
+    condition: &Condition,
+    snapshot: &AgentStateSnapshot,
+) -> Result<bool, String> {
+    match condition {
+        Condition::Always => Ok(true),
+        Condition::Never => Ok(false),
+        Condition::StateEq { field, value } => Ok(get_snapshot_field(snapshot, field)? == *value),
+        Condition::StateGt { field, value } => {
+            let current = get_snapshot_field_numeric(snapshot, field)?;
+            Ok(current > *value)
+        }
+        Condition::OutputOk { step_id } => Ok(snapshot
+            .previous_results
+            .get(step_id)
+            .map(|result| result.success)
+            .unwrap_or(false)),
+        Condition::OutputFailed { step_id } => Ok(snapshot
+            .previous_results
+            .get(step_id)
+            .map(|result| !result.success)
+            .unwrap_or(false)),
+        Condition::And(left, right) => Ok(evaluate_snapshot_condition(left, snapshot)?
+            && evaluate_snapshot_condition(right, snapshot)?),
+        Condition::Or(left, right) => Ok(evaluate_snapshot_condition(left, snapshot)?
+            || evaluate_snapshot_condition(right, snapshot)?),
+        Condition::Not(condition) => Ok(!evaluate_snapshot_condition(condition, snapshot)?),
+    }
+}
+
+fn get_snapshot_field(snapshot: &AgentStateSnapshot, field: &str) -> Result<Value, String> {
+    match field {
+        "current_step" => Ok(Value::String(snapshot.current_step.clone())),
+        "step_index" => Ok(serde_json::json!(snapshot.step_index)),
+        "consecutive_failures" => Ok(serde_json::json!(snapshot.consecutive_failures)),
+        "total_executions" => Ok(serde_json::json!(snapshot.total_executions)),
+        "completed" => Ok(Value::Bool(snapshot.completed)),
+        "paused" => Ok(Value::Bool(snapshot.paused)),
+        "agent_id" => Ok(Value::String(snapshot.agent_id.clone())),
+        "version" => Ok(Value::String(snapshot.version.clone())),
+        _ => Err(format!("unknown state field: {}", field)),
+    }
+}
+
+fn get_snapshot_field_numeric(snapshot: &AgentStateSnapshot, field: &str) -> Result<f64, String> {
+    let value = get_snapshot_field(snapshot, field)?;
+    value
+        .as_f64()
+        .or_else(|| value.as_u64().map(|value| value as f64))
+        .or_else(|| value.as_i64().map(|value| value as f64))
+        .ok_or_else(|| format!("field {} is not numeric", field))
+}
+
+fn resolve_snapshot_input(
+    source: &InputSource,
+    context: &WorkerContext,
+    previous_results: &HashMap<String, StepResult>,
+) -> Result<Option<Value>, String> {
+    match source {
+        InputSource::None => Ok(None),
+        InputSource::Static(Value::Null) => Ok(None),
+        InputSource::Static(value) => Ok(Some(value.clone())),
+        InputSource::FromStep(step_id, field) => {
+            let result = previous_results
+                .get(step_id)
+                .ok_or_else(|| format!("step {} not found in results", step_id))?;
+            if !result.success {
+                return Err(format!("step {} failed, cannot use output", step_id));
+            }
+
+            let data = result
+                .data
+                .as_ref()
+                .ok_or_else(|| format!("step {} has no data", step_id))?;
+            let parsed: Value = serde_json::from_str(data)
+                .map_err(|err| format!("invalid json in step {}: {}", step_id, err))?;
+
+            match field {
+                Some(field) => {
+                    let extracted = parsed.get(field).ok_or_else(|| {
+                        format!("field {} not found in step {} output", field, step_id)
+                    })?;
+                    Ok(Some(extracted.clone()))
+                }
+                None => Ok(Some(parsed)),
+            }
+        }
+        InputSource::FromContext(path) => resolve_snapshot_context(path, context),
+        InputSource::Merge(sources) => {
+            let mut merged = serde_json::Map::new();
+
+            for source in sources {
+                if let Some(value) = resolve_snapshot_input(source, context, previous_results)? {
+                    if let Some(object) = value.as_object() {
+                        for (key, value) in object {
+                            merged.insert(key.clone(), value.clone());
+                        }
+                    } else {
+                        return Err(format!("cannot merge non-object input: {}", value));
+                    }
+                }
+            }
+
+            Ok(Some(Value::Object(merged)))
+        }
+    }
+}
+
+fn resolve_snapshot_context(path: &str, context: &WorkerContext) -> Result<Option<Value>, String> {
+    let parts = path.split('.').collect::<Vec<_>>();
+    if parts.len() < 2 || parts[0] != "agent" || parts[1] != "environment" {
+        return Err(format!("unknown context path: {}", path));
+    }
+
+    let mut current = context
+        .global_config
+        .environment
+        .as_ref()
+        .ok_or_else(|| "agent environment is not configured".to_string())?;
+
+    for part in parts.iter().skip(2) {
+        current = current
+            .get(part)
+            .ok_or_else(|| format!("context field {} not found in {}", part, path))?;
+    }
+
+    Ok(Some(current.clone()))
 }
 
 #[cfg(test)]
@@ -1043,5 +1477,288 @@ mod tests {
         assert_eq!(context.state.total_executions, 7);
         assert!(context.global_config.base_url.is_some());
         assert_eq!(context.risk_config.max_total_executions, 100);
+    }
+
+    fn parallel_step(id: &str, capability: &str) -> Step {
+        Step {
+            id: id.to_string(),
+            capability: capability.to_string(),
+            max_retries: 1,
+            input: InputSource::None,
+            config_override: None,
+            condition: None,
+            on_skip: None,
+        }
+    }
+
+    fn parallel_group(id: &str, join_strategy: JoinStrategy, steps: Vec<Step>) -> ParallelGroup {
+        ParallelGroup {
+            id: id.to_string(),
+            steps,
+            join_strategy,
+            max_concurrency: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_all_success_passes_when_all_children_pass() {
+        let registry = registry(true);
+        let loop_engine = ExecutionLoop::new(happy_path_package(), &registry);
+        let group = parallel_group(
+            "all_ok",
+            JoinStrategy::AllSuccess,
+            vec![
+                parallel_step("a", "http_ping"),
+                parallel_step("b", "http_ping"),
+            ],
+        );
+        let mut state = State::new("parallel_all_ok");
+
+        let outcome = loop_engine
+            .execute_parallel_group(&group, &mut state)
+            .await
+            .unwrap();
+
+        assert!(outcome.succeeded);
+        assert_eq!(outcome.group_id, "all_ok");
+        assert_eq!(outcome.success_count, 2);
+        assert_eq!(outcome.failure_count, 0);
+        assert!(!state.paused);
+        assert_eq!(state.total_executions, 2);
+        assert!(state.results["a"].success);
+        assert!(state.results["b"].success);
+    }
+
+    #[tokio::test]
+    async fn parallel_all_success_fails_when_one_child_fails() {
+        let registry = registry(false);
+        let loop_engine = ExecutionLoop::new(happy_path_package(), &registry);
+        let group = parallel_group(
+            "all_one_fail",
+            JoinStrategy::AllSuccess,
+            vec![
+                parallel_step("a", "http_ping"),
+                parallel_step("b", "http_validate"),
+            ],
+        );
+        let mut state = State::new("parallel_all_fail");
+
+        let outcome = loop_engine
+            .execute_parallel_group(&group, &mut state)
+            .await
+            .unwrap();
+
+        assert!(!outcome.succeeded);
+        assert_eq!(outcome.success_count, 1);
+        assert_eq!(outcome.failure_count, 1);
+        assert!(state.paused);
+        assert_eq!(state.total_executions, 2);
+        assert!(!state.results["b"].success);
+
+        std::fs::remove_file(state.snapshot_path()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn parallel_any_success_passes_with_one_success() {
+        let registry = registry(false);
+        let loop_engine = ExecutionLoop::new(happy_path_package(), &registry);
+        let group = parallel_group(
+            "any_one_ok",
+            JoinStrategy::AnySuccess,
+            vec![
+                parallel_step("a", "http_validate"),
+                parallel_step("b", "http_ping"),
+            ],
+        );
+        let mut state = State::new("parallel_any_ok");
+
+        let outcome = loop_engine
+            .execute_parallel_group(&group, &mut state)
+            .await
+            .unwrap();
+
+        assert!(outcome.succeeded);
+        assert_eq!(outcome.success_count, 1);
+        assert_eq!(outcome.failure_count, 1);
+        assert!(!state.paused);
+        assert_eq!(state.total_executions, 2);
+    }
+
+    #[tokio::test]
+    async fn parallel_quorum_passes_with_two_of_three_successes() {
+        let registry = registry(false);
+        let loop_engine = ExecutionLoop::new(happy_path_package(), &registry);
+        let group = parallel_group(
+            "quorum_pass",
+            JoinStrategy::Quorum(2),
+            vec![
+                parallel_step("a", "http_ping"),
+                parallel_step("b", "http_ping"),
+                parallel_step("c", "http_validate"),
+            ],
+        );
+        let mut state = State::new("parallel_quorum_pass");
+
+        let outcome = loop_engine
+            .execute_parallel_group(&group, &mut state)
+            .await
+            .unwrap();
+
+        assert!(outcome.succeeded);
+        assert_eq!(outcome.success_count, 2);
+        assert_eq!(outcome.failure_count, 1);
+        assert!(!state.paused);
+        assert_eq!(state.total_executions, 3);
+    }
+
+    #[tokio::test]
+    async fn parallel_quorum_fails_with_one_of_three_successes() {
+        let registry = registry(false);
+        let loop_engine = ExecutionLoop::new(happy_path_package(), &registry);
+        let group = parallel_group(
+            "quorum_fail",
+            JoinStrategy::Quorum(2),
+            vec![
+                parallel_step("a", "http_ping"),
+                parallel_step("b", "http_validate"),
+                parallel_step("c", "http_validate"),
+            ],
+        );
+        let mut state = State::new("parallel_quorum_fail");
+
+        let outcome = loop_engine
+            .execute_parallel_group(&group, &mut state)
+            .await
+            .unwrap();
+
+        assert!(!outcome.succeeded);
+        assert_eq!(outcome.success_count, 1);
+        assert_eq!(outcome.failure_count, 2);
+        assert!(state.paused);
+        assert_eq!(state.total_executions, 3);
+
+        std::fs::remove_file(state.snapshot_path()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn parallel_merge_order_is_deterministic_by_declaration_order() {
+        let registry = registry(false);
+        let loop_engine = ExecutionLoop::new(happy_path_package(), &registry);
+        let group = parallel_group(
+            "ordered",
+            JoinStrategy::AnySuccess,
+            vec![
+                parallel_step("first_fail", "http_validate"),
+                parallel_step("second_ok", "http_ping"),
+            ],
+        );
+        let mut state = State::new("parallel_order");
+
+        let outcome = loop_engine
+            .execute_parallel_group(&group, &mut state)
+            .await
+            .unwrap();
+
+        assert!(outcome.succeeded);
+        assert_eq!(state.consecutive_failures, 0);
+        assert!(!state.results["first_fail"].success);
+        assert!(state.results["second_ok"].success);
+    }
+
+    #[tokio::test]
+    async fn parallel_worker_does_not_mutate_live_state_directly() {
+        let package = happy_path_package();
+        let registry = registry(true);
+        let mut live_state = State::new("worker_no_mutate");
+        live_state.total_executions = 10;
+        let context = WorkerContext {
+            state: live_state.snapshot(),
+            global_config: package.global_config.clone(),
+            risk_config: package.risk_config.clone(),
+        };
+
+        let worker_result = execute_parallel_worker(
+            parallel_step("worker_step", "http_ping"),
+            0,
+            context,
+            registry,
+        )
+        .await;
+
+        assert!(worker_result.result.success);
+        assert!(live_state.results.is_empty());
+        assert_eq!(live_state.total_executions, 10);
+    }
+
+    #[tokio::test]
+    async fn parallel_fail_fast_fails_on_first_observed_failure() {
+        let registry = registry(false);
+        let loop_engine = ExecutionLoop::new(happy_path_package(), &registry);
+        let group = parallel_group(
+            "fail_fast",
+            JoinStrategy::FailFast,
+            vec![
+                parallel_step("a", "http_validate"),
+                parallel_step("b", "http_ping"),
+            ],
+        );
+        let mut state = State::new("parallel_fail_fast");
+
+        let outcome = loop_engine
+            .execute_parallel_group(&group, &mut state)
+            .await
+            .unwrap();
+
+        assert!(!outcome.succeeded);
+        assert_eq!(outcome.group_id, "fail_fast");
+        assert!(outcome.fail_fast_triggered);
+        assert!(outcome.failure_count >= 1);
+        assert!(state.paused);
+
+        std::fs::remove_file(state.snapshot_path()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn parallel_group_rejects_conflicting_child_writes() {
+        let registry = registry(true);
+        let loop_engine = ExecutionLoop::new(happy_path_package(), &registry);
+        let duplicate_group = parallel_group(
+            "duplicate",
+            JoinStrategy::AllSuccess,
+            vec![
+                parallel_step("same", "http_ping"),
+                parallel_step("same", "http_ping"),
+            ],
+        );
+        let mut state = State::new("parallel_conflict");
+
+        let duplicate_error = loop_engine
+            .execute_parallel_group(&duplicate_group, &mut state)
+            .await
+            .unwrap_err();
+
+        assert!(duplicate_error.contains("duplicate step id"));
+
+        state.record_result(
+            "existing",
+            StepResult {
+                success: true,
+                data: Some("ok".to_string()),
+                error: None,
+                timestamp: Utc::now().to_rfc3339(),
+            },
+        );
+        let overwrite_group = parallel_group(
+            "overwrite",
+            JoinStrategy::AllSuccess,
+            vec![parallel_step("existing", "http_ping")],
+        );
+
+        let overwrite_error = loop_engine
+            .execute_parallel_group(&overwrite_group, &mut state)
+            .await
+            .unwrap_err();
+
+        assert!(overwrite_error.contains("would overwrite existing result"));
     }
 }
