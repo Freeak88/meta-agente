@@ -1,6 +1,9 @@
 mod api;
 #[cfg(test)]
 mod api_contract_test;
+mod api_server;
+#[cfg(test)]
+mod api_server_test;
 mod capability;
 mod dsl;
 #[cfg(test)]
@@ -33,9 +36,14 @@ use std::env;
 
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.contains(&"--server".to_string()) {
+        api_server::start_server().await;
+        return;
+    }
+
     println!("=== OPERANT MVP v0.9 ===\n");
 
-    let args: Vec<String> = env::args().collect();
     let resume = args.contains(&"--resume".to_string());
     let block_validate = args.contains(&"--block-validate".to_string());
     let strict = args.contains(&"--strict".to_string());
