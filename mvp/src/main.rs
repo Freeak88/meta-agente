@@ -1,3 +1,6 @@
+mod api;
+#[cfg(test)]
+mod api_contract_test;
 mod capability;
 mod dsl;
 #[cfg(test)]
