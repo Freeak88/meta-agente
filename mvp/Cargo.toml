@@ -16,3 +16,6 @@ reqwest = { version = "0.12", features = ["json"] }
 rand = { version = "0.8", features = ["std_rng"] }
 nom = "7.1"
 md5 = "0.7"
+axum = "0.7"
+tower = { version = "0.5", features = ["util"] }
+sha2 = "0.10"
