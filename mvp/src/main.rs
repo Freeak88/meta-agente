@@ -2,6 +2,9 @@ mod capability;
 mod dsl;
 #[cfg(test)]
 mod dsl_contract_test;
+mod dsl_parser;
+#[cfg(test)]
+mod dsl_parser_test;
 mod executor;
 mod r#loop;
 mod risk;

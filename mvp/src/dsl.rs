@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use crate::r#loop::{AgentGlobalConfig, AgentPackage, InputSource, Step};
 use crate::risk::RiskConfig;
 
+pub use crate::dsl_parser::parse_opl;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OplAst {
     pub agent: AgentDecl,
