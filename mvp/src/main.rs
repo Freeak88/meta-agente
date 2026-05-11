@@ -27,6 +27,7 @@ mod risk;
 mod simulation;
 #[cfg(test)]
 mod simulation_integration_test;
+mod skill_registry;
 mod state;
 
 use capability::{CapabilityConfig, CapabilityRegistry, RetryPolicy};

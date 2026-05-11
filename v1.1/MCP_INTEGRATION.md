@@ -38,6 +38,21 @@ The third slice parses OpenAPI 3 specs and generates capability metadata:
 The bridge also includes a basic `OpenApiCapabilityAdapter` for executing
 generated HTTP capabilities once they are registered.
 
+## Skill Registry
+
+The final slice adds reusable skills:
+
+- Versioned `Skill` metadata
+- Search by name, description, or domain
+- Domain listing
+- Import with version validation
+- Placeholder replacement into OPL templates
+- Minimal `IMPORT skill ... VERSION ... WITH ...` AST/parser support
+
+Skill imports are represented in the OPL AST first. Full expansion into the
+transpiler/runtime is deferred until the planner needs imported skills to become
+concrete package steps.
+
 ## Minimal MCP Client
 
 The client speaks JSON-RPC 2.0 messages compatible with MCP-style methods:
@@ -69,5 +84,5 @@ or external dependency.
 
 - stdio transport
 - HTTP/SSE transport
-- Skill registry import
+- Full skill import expansion during transpilation
 - Mapping MCP tools into `CapabilityAdapter`
