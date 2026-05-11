@@ -24,6 +24,20 @@ Tests spawn a real child process that speaks mock MCP JSON-RPC over stdio,
 so the transport is validated without depending on `npx` or a third-party
 server.
 
+## OpenAPI Bridge
+
+The third slice parses OpenAPI 3 specs and generates capability metadata:
+
+- `operationId` becomes the capability id
+- HTTP method and path are preserved
+- Summary/description become the capability description
+- Required and optional parameters are extracted
+- Request body presence is tracked
+- Missing `operationId` gets a deterministic fallback id
+
+The bridge also includes a basic `OpenApiCapabilityAdapter` for executing
+generated HTTP capabilities once they are registered.
+
 ## Minimal MCP Client
 
 The client speaks JSON-RPC 2.0 messages compatible with MCP-style methods:
@@ -55,6 +69,5 @@ or external dependency.
 
 - stdio transport
 - HTTP/SSE transport
-- OpenAPI bridge
 - Skill registry import
 - Mapping MCP tools into `CapabilityAdapter`
