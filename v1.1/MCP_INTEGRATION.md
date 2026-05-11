@@ -10,6 +10,20 @@ v1.1 connects Meta-Agente to external tools through three layers:
 
 This first slice implements only the minimal MCP client contract.
 
+## Stdio Transport
+
+The second slice adds a real stdio transport:
+
+- Spawns an MCP server process with stdin/stdout piped
+- Sends one JSON-RPC request per line
+- Reads one JSON-RPC response per line
+- Validates response ids
+- Reuses the existing `McpClient<T>` through the `McpTransport` trait
+
+Tests spawn a real child process that speaks mock MCP JSON-RPC over stdio,
+so the transport is validated without depending on `npx` or a third-party
+server.
+
 ## Minimal MCP Client
 
 The client speaks JSON-RPC 2.0 messages compatible with MCP-style methods:

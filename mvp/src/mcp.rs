@@ -78,6 +78,13 @@ where
     next_id: u64,
 }
 
+impl McpClient<crate::mcp_stdio::StdioTransport> {
+    pub async fn with_stdio(command: &str, args: &[String]) -> Result<Self, String> {
+        let transport = crate::mcp_stdio::StdioTransport::spawn(command, args).await?;
+        Self::connect(transport).await
+    }
+}
+
 impl<T> McpClient<T>
 where
     T: McpTransport,
