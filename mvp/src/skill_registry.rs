@@ -101,7 +101,8 @@ impl SkillRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsl::{parse_opl, OplValue};
+    use crate::dsl::{parse_opl, OplAst, OplTranspiler, OplValue};
+    use crate::simulation::{SimulationConfig, SimulationEngine, SimulationMode, ValidationStatus};
 
     fn test_registry() -> SkillRegistry {
         let mut registry = SkillRegistry::new();
@@ -163,6 +164,17 @@ STEP notify
         });
 
         registry
+    }
+
+    fn override_to_string(value: &OplValue) -> String {
+        match value {
+            OplValue::String(value) | OplValue::Identifier(value) => value.clone(),
+            OplValue::Number(value) => value.to_string(),
+            OplValue::Bool(value) => value.to_string(),
+            OplValue::List(_) | OplValue::Object(_) => {
+                serde_json::to_string(value).unwrap_or_default()
+            }
+        }
     }
 
     #[test]
@@ -263,5 +275,71 @@ FOR "Import skill test"
             ast.imports[0].overrides.get("period"),
             Some(&OplValue::String("2026-05".to_string()))
         );
+    }
+
+    #[tokio::test]
+    async fn e2e_import_skill_transpile_and_simulate() {
+        let opl = r#"
+IMPORT skill "invoice_processing_v1" VERSION "1.0.0"
+WITH
+  period = "2026-05",
+  folder = "/invoices"
+
+CREATE AGENT my_agent
+FOR "Procesar facturas"
+"#;
+
+        let registry = test_registry();
+        let ast = parse_opl(opl).unwrap();
+        let mut resolved_steps = Vec::new();
+
+        for import in &ast.imports {
+            let overrides = import
+                .overrides
+                .iter()
+                .map(|(key, value)| (key.clone(), override_to_string(value)))
+                .collect();
+            let skill_opl = registry
+                .import_skill(&SkillImport {
+                    skill_id: import.skill_id.clone(),
+                    version: import.version.clone(),
+                    overrides,
+                })
+                .unwrap();
+            let wrapped_skill_opl = format!(
+                "CREATE AGENT imported_skill\nFOR \"Imported skill\"\n{}",
+                skill_opl
+            );
+            let skill_ast = parse_opl(&wrapped_skill_opl).unwrap();
+            resolved_steps.extend(skill_ast.agent.steps);
+        }
+
+        let mut agent = ast.agent.clone();
+        resolved_steps.extend(agent.steps);
+        agent.steps = resolved_steps;
+
+        let package = OplTranspiler::transpile(&OplAst {
+            agent,
+            imports: vec![],
+        })
+        .unwrap();
+
+        let report = SimulationEngine::run(
+            &package,
+            &SimulationConfig {
+                agent_id: "my_agent".to_string(),
+                mode: SimulationMode::Optimistic,
+                seed: None,
+                max_runs: Some(1),
+                failure_rate: None,
+                execution_log_id: None,
+            },
+        )
+        .await;
+
+        assert_eq!(package.id, "my_agent");
+        assert_eq!(package.steps.len(), 4);
+        assert_eq!(report.summary.validation_status, ValidationStatus::Approved);
+        assert_eq!(report.summary.pass_rate, 1.0);
     }
 }
