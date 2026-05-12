@@ -464,4 +464,95 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn e2e_register_login_create_deploy_scale_health() {
+        let app = cloud_router(Arc::new(CloudState::new("test-secret")));
+        let (app, _) = register_and_token(app).await;
+        let login_request = LoginRequest {
+            email: "test@example.com".to_string(),
+            password: "password123".to_string(),
+        };
+
+        let login = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&login_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login.status(), StatusCode::OK);
+        let login_body = to_bytes(login.into_body(), usize::MAX).await.unwrap();
+        let auth: AuthResponse = serde_json::from_slice(&login_body).unwrap();
+        let token = auth.token;
+
+        let create = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agents")
+                    .header("authorization", format!("Bearer {}", token))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&test_intent()).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let create_body = to_bytes(create.into_body(), usize::MAX).await.unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&create_body).unwrap();
+        assert_eq!(created["status"], "APPROVED");
+        let agent_id = created["agent_id"].as_str().unwrap();
+
+        let deploy = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/agents/{}/deploy", agent_id))
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deploy.status(), StatusCode::OK);
+
+        let scale = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/agents/{}/scale", agent_id))
+                    .header("authorization", format!("Bearer {}", token))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"workers":2}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(scale.status(), StatusCode::OK);
+
+        let health = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/agents/{}/health", agent_id))
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+        let health_body = to_bytes(health.into_body(), usize::MAX).await.unwrap();
+        let health_json: serde_json::Value = serde_json::from_slice(&health_body).unwrap();
+        assert_eq!(health_json["agent_id"], agent_id);
+        assert_eq!(health_json["status"], "Healthy");
+    }
 }
