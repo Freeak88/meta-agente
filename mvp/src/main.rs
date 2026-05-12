@@ -7,6 +7,7 @@ mod api_server_test;
 mod auth;
 mod billing;
 mod capability;
+mod cloud_api;
 mod dsl;
 #[cfg(test)]
 mod dsl_contract_test;

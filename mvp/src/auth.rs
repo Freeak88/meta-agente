@@ -131,6 +131,16 @@ impl AuthService {
     }
 
     pub fn validate_jwt(&self, token: &str) -> Result<Account, AuthError> {
+        let claims = self.validate_claims(token)?;
+
+        self.accounts
+            .values()
+            .find(|stored| stored.account.id == claims.sub)
+            .map(|stored| stored.account.clone())
+            .ok_or(AuthError::InvalidToken)
+    }
+
+    pub fn validate_claims(&self, token: &str) -> Result<Claims, AuthError> {
         let data = decode::<Claims>(
             token,
             &DecodingKey::from_secret(self.jwt_secret.as_bytes()),
@@ -138,11 +148,24 @@ impl AuthService {
         )
         .map_err(|_| AuthError::InvalidToken)?;
 
+        Ok(data.claims)
+    }
+
+    pub fn get_account(&self, account_id: &str) -> Result<Account, AuthError> {
         self.accounts
             .values()
-            .find(|stored| stored.account.id == data.claims.sub)
+            .find(|stored| stored.account.id == account_id)
             .map(|stored| stored.account.clone())
-            .ok_or(AuthError::InvalidToken)
+            .ok_or(AuthError::AccountNotFound)
+    }
+
+    pub fn update_account(&mut self, account: Account) -> Result<(), AuthError> {
+        let stored = self
+            .accounts
+            .get_mut(&account.email)
+            .ok_or(AuthError::AccountNotFound)?;
+        stored.account = account;
+        Ok(())
     }
 
     pub fn validate_api_key(&self, key: &str) -> Result<Account, AuthError> {
