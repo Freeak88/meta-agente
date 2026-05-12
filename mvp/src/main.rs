@@ -34,6 +34,7 @@ mod simulation;
 mod simulation_integration_test;
 mod skill_registry;
 mod state;
+mod wasm_runtime;
 
 use capability::{CapabilityConfig, CapabilityRegistry, RetryPolicy};
 use executor::http::HttpGetAdapter;
