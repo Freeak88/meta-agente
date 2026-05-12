@@ -25,6 +25,7 @@ mod meta_agent_contract_test;
 #[cfg(test)]
 mod meta_agent_test;
 mod openapi_bridge;
+mod orchestrator;
 mod risk;
 mod simulation;
 #[cfg(test)]
