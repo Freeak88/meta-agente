@@ -5,6 +5,7 @@ mod api_server;
 #[cfg(test)]
 mod api_server_test;
 mod auth;
+mod billing;
 mod capability;
 mod dsl;
 #[cfg(test)]
