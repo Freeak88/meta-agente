@@ -55,6 +55,7 @@ fn build_minimal_ast() -> OplAst {
                 backoff: Some("EXPONENTIAL".to_string()),
             }],
         },
+        imports: vec![],
     }
 }
 

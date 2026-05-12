@@ -15,15 +15,19 @@ mod dsl_parser;
 mod dsl_parser_test;
 mod executor;
 mod r#loop;
+mod mcp;
+mod mcp_stdio;
 mod meta_agent;
 #[cfg(test)]
 mod meta_agent_contract_test;
 #[cfg(test)]
 mod meta_agent_test;
+mod openapi_bridge;
 mod risk;
 mod simulation;
 #[cfg(test)]
 mod simulation_integration_test;
+mod skill_registry;
 mod state;
 
 use capability::{CapabilityConfig, CapabilityRegistry, RetryPolicy};
@@ -37,6 +41,11 @@ use std::env;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
+    if args.contains(&"--mock-mcp-stdio-server".to_string()) {
+        mcp_stdio::run_mock_stdio_server().await;
+        return;
+    }
+
     if args.contains(&"--server".to_string()) {
         api_server::start_server().await;
         return;

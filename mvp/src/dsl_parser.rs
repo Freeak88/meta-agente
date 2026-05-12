@@ -10,12 +10,13 @@ use nom::{
     IResult,
 };
 
-use crate::dsl::{AgentDecl, FallbackDecl, OplAst, OplValue, StepDecl};
+use crate::dsl::{AgentDecl, FallbackDecl, OplAst, OplValue, SkillImportDecl, StepDecl};
 
 #[derive(Debug, Clone)]
 enum Statement {
     Step(StepDecl),
     Fallback(FallbackDecl),
+    Import(SkillImportDecl),
 }
 
 fn identifier(input: &str) -> IResult<&str, String> {
@@ -171,7 +172,8 @@ fn section_blocks(input: &str) -> Vec<String> {
         let line = raw_line.trim_end();
         let starts_declaration = line.trim_start().starts_with("CREATE ")
             || line.trim_start().starts_with("STEP ")
-            || line.trim_start().starts_with("ON ");
+            || line.trim_start().starts_with("ON ")
+            || line.trim_start().starts_with("IMPORT ");
 
         if starts_declaration && !current.is_empty() {
             blocks.push(current.join("\n"));
@@ -302,6 +304,39 @@ fn parse_fallback_block(block: &str) -> Result<FallbackDecl, String> {
     })
 }
 
+fn parse_import_block(block: &str) -> Result<SkillImportDecl, String> {
+    let lines: Vec<&str> = block.lines().collect();
+    let first_line = lines
+        .first()
+        .ok_or_else(|| "missing IMPORT declaration".to_string())?
+        .trim();
+    let parts: Vec<&str> = first_line.split_whitespace().collect();
+
+    if parts.len() < 5 || parts[0] != "IMPORT" || parts[1] != "skill" || parts[3] != "VERSION" {
+        return Err(format!("invalid skill import: {first_line}"));
+    }
+
+    let skill_id = parts[2].trim_matches('"').to_string();
+    let version = parts[4].trim_matches('"').to_string();
+    let mut overrides = HashMap::new();
+
+    if let Some(with_index) = lines.iter().position(|line| line.trim() == "WITH") {
+        let property_text = lines[(with_index + 1)..].join("\n");
+        let (remaining, parsed) = property_list(&property_text)
+            .map_err(|err| format!("skill import property parse error: {err:?}"))?;
+        if !remaining.trim().is_empty() {
+            return Err(format!("unparsed skill import properties: {remaining}"));
+        }
+        overrides = parsed;
+    }
+
+    Ok(SkillImportDecl {
+        skill_id,
+        version,
+        overrides,
+    })
+}
+
 pub fn parse_opl(input: &str) -> Result<OplAst, String> {
     let blocks = section_blocks(input);
     let agent_block = blocks
@@ -320,6 +355,8 @@ pub fn parse_opl(input: &str) -> Result<OplAst, String> {
             statements.push(Statement::Step(parse_step_block(block)?));
         } else if block.trim_start().starts_with("ON ") {
             statements.push(Statement::Fallback(parse_fallback_block(block)?));
+        } else if block.trim_start().starts_with("IMPORT ") {
+            statements.push(Statement::Import(parse_import_block(block)?));
         } else {
             return Err(format!("unparsed input remaining: {block}"));
         }
@@ -327,10 +364,12 @@ pub fn parse_opl(input: &str) -> Result<OplAst, String> {
 
     let mut steps = Vec::new();
     let mut fallbacks = Vec::new();
+    let mut imports = Vec::new();
     for statement in statements {
         match statement {
             Statement::Step(step) => steps.push(step),
             Statement::Fallback(fallback) => fallbacks.push(fallback),
+            Statement::Import(import) => imports.push(import),
         }
     }
 
@@ -342,5 +381,6 @@ pub fn parse_opl(input: &str) -> Result<OplAst, String> {
             steps,
             fallbacks,
         },
+        imports,
     })
 }

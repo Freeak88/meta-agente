@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct CapabilityConfig {
@@ -9,6 +10,88 @@ pub struct CapabilityConfig {
     pub retry_policy: RetryPolicy,
     pub headers: Option<Value>,
     pub base_url: Option<String>,
+}
+
+pub struct OpenApiCapabilityAdapter {
+    capability_id: String,
+    method: String,
+    path: String,
+    base_url: String,
+}
+
+impl OpenApiCapabilityAdapter {
+    #[allow(dead_code)]
+    pub fn new(
+        capability_id: impl Into<String>,
+        method: impl Into<String>,
+        path: impl Into<String>,
+        base_url: impl Into<String>,
+    ) -> Self {
+        Self {
+            capability_id: capability_id.into(),
+            method: method.into(),
+            path: path.into(),
+            base_url: base_url.into(),
+        }
+    }
+
+    fn resolve_url(&self, input: &Option<Value>) -> String {
+        let mut url = format!("{}{}", self.base_url.trim_end_matches('/'), self.path);
+
+        if let Some(Value::Object(input)) = input {
+            for (key, value) in input {
+                if let Some(value) = value.as_str() {
+                    url = url.replace(&format!("{{{}}}", key), value);
+                }
+            }
+        }
+
+        url
+    }
+}
+
+#[async_trait]
+impl CapabilityAdapter for OpenApiCapabilityAdapter {
+    fn capability_id(&self) -> &str {
+        &self.capability_id
+    }
+
+    async fn execute(&self, input: Option<Value>, config: &CapabilityConfig) -> ExecutionResult {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(config.timeout_ms))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        let url = self.resolve_url(&input);
+
+        let request = match self.method.as_str() {
+            "GET" => client.get(&url),
+            "POST" => client.post(&url).json(&input.unwrap_or(Value::Null)),
+            "PUT" => client.put(&url).json(&input.unwrap_or(Value::Null)),
+            "PATCH" => client.patch(&url).json(&input.unwrap_or(Value::Null)),
+            "DELETE" => client.delete(&url),
+            method => return ExecutionResult::Failure(format!("unsupported_method: {}", method)),
+        };
+
+        match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                let body = match response.text().await {
+                    Ok(body) => body,
+                    Err(err) => {
+                        return ExecutionResult::Failure(format!("body_read_error: {}", err))
+                    }
+                };
+
+                if status.is_success() {
+                    let data = serde_json::from_str::<Value>(&body).unwrap_or(Value::String(body));
+                    ExecutionResult::Success(data)
+                } else {
+                    ExecutionResult::Failure(format!("http_error: {} - {}", status.as_u16(), body))
+                }
+            }
+            Err(err) => ExecutionResult::Failure(format!("request_error: {}", err)),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

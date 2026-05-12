@@ -11,6 +11,8 @@ pub use crate::dsl_parser::parse_opl;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OplAst {
     pub agent: AgentDecl,
+    #[serde(default)]
+    pub imports: Vec<SkillImportDecl>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -39,6 +41,13 @@ pub struct FallbackDecl {
     pub target: String,
     pub retry: Option<u32>,
     pub backoff: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SkillImportDecl {
+    pub skill_id: String,
+    pub version: String,
+    pub overrides: HashMap<String, OplValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
