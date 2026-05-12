@@ -4,7 +4,10 @@ mod api_contract_test;
 mod api_server;
 #[cfg(test)]
 mod api_server_test;
+mod auth;
+mod billing;
 mod capability;
+mod cloud_api;
 mod dsl;
 #[cfg(test)]
 mod dsl_contract_test;
@@ -22,7 +25,9 @@ mod meta_agent;
 mod meta_agent_contract_test;
 #[cfg(test)]
 mod meta_agent_test;
+mod metrics;
 mod openapi_bridge;
+mod orchestrator;
 mod risk;
 mod simulation;
 #[cfg(test)]
